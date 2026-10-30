@@ -8762,6 +8762,10 @@ msgstr "Deze verwijderen"
 msgid "Remove {name}?"
 msgstr "{name} verwijderen?"
 
+#: cps/spa_strings.py
+msgid "Removed devices"
+msgstr "Verwijderde apparaten"
+
 #: cps/spa_strings.py cps/templates/detail.html
 msgid "Removed from Currently Reading."
 msgstr "Verwijderd uit Momenteel aan het lezen."
@@ -8883,6 +8887,11 @@ msgstr "Standaardwaarden herstellen"
 #: cps/spa_strings.py
 msgid "Restore"
 msgstr "Herstellen"
+
+#: cps/spa_strings.py
+#, python-brace-format
+msgid "Restore {name}"
+msgstr "{name} herstellen"
 
 #: cps/spa_strings.py
 #, python-brace-format
@@ -19371,14 +19380,6 @@ msgstr "Synchroniseer geselecteerde boekenplanken met Kobo"
 #, fuzzy
 msgid "Show Read/Unread Section"
 msgstr "Toon gelezen/niet gelezen selectie"
-
-#: cps/spa_strings.py
-msgid "Removed devices"
-msgstr "Verwijderde apparaten"
-
-#: cps/spa_strings.py
-msgid "Restore {name}"
-msgstr "{name} herstellen"
 
 #~ msgid "Progress is not being saved."
 #~ msgstr "Voortgang wordt niet opgeslagen."

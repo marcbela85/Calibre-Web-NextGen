@@ -8464,6 +8464,10 @@ msgstr "移除这些项目"
 msgid "Remove {name}?"
 msgstr "移除 {name}？"
 
+#: cps/spa_strings.py
+msgid "Removed devices"
+msgstr ""
+
 #: cps/spa_strings.py cps/templates/detail.html
 msgid "Removed from Currently Reading."
 msgstr "已从“正在阅读”中移除。"
@@ -8582,6 +8586,11 @@ msgstr "恢复默认设置"
 #: cps/spa_strings.py
 msgid "Restore"
 msgstr "恢复"
+
+#: cps/spa_strings.py
+#, python-brace-format
+msgid "Restore {name}"
+msgstr ""
 
 #: cps/spa_strings.py
 #, python-brace-format
@@ -15351,7 +15360,10 @@ msgid ""
 "example an empty description, a missing series or cover) and adds new tags, "
 "but never replaces data the book already has. When disabled, fetched "
 "metadata will replace existing data as-is from the preferred provider."
-msgstr "启用时，抓取的元数据只补全书籍缺失的内容（如空描述、缺失的丛书或封面）并添加新标签，绝不替换书籍已有的数据。禁用时，抓取的元数据将按首选提供商的原样替换现有数据。"
+msgstr ""
+"启用时，抓取的元数据只补全书籍缺失的内容（如空描述、缺失的丛书或封面）并添加"
+"新标签，绝不替换书籍已有的数据。禁用时，抓取的元数据将按首选提供商的原样替换"
+"现有数据。"
 
 #: cps/templates/cwa_settings.html
 msgid "Metadata Fields to Update"

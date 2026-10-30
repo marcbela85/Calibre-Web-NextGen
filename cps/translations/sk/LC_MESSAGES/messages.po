@@ -8749,6 +8749,10 @@ msgstr "Odstrániť tieto"
 msgid "Remove {name}?"
 msgstr "Odstrániť {name}?"
 
+#: cps/spa_strings.py
+msgid "Removed devices"
+msgstr ""
+
 #: cps/spa_strings.py cps/templates/detail.html
 msgid "Removed from Currently Reading."
 msgstr "Odstránené z Práve čítaných."
@@ -8870,6 +8874,11 @@ msgstr "Obnoviť predvolené"
 #: cps/spa_strings.py
 msgid "Restore"
 msgstr "Obnoviť"
+
+#: cps/spa_strings.py
+#, python-brace-format
+msgid "Restore {name}"
+msgstr ""
 
 #: cps/spa_strings.py
 #, python-brace-format
