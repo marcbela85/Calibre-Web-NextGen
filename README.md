@@ -715,7 +715,7 @@ Completion refreshes automatically on every push to `main`, via [`scripts/genera
 | Language | Completion | Strings | Fuzzy |
 |---|---|---:|---:|
 | English (source) | 100% | source | n/a |
-| Chinese (Simplified, China) (`zh_Hans_CN`) | `████████████████████` 100% | 4125/4140 | 0 |
+| Chinese (Simplified, China) (`zh_Hans_CN`) | `████████████████████` 100% | 4133/4140 | 0 |
 | ca (`ca`) | `████████████████████` 99% | 4090/4140 | 0 |
 | Slovak (`sk`) | `████████████████████` 99% | 4085/4140 | 0 |
 | Russian (`ru`) | `████████████████████` 98% | 4075/4140 | 0 |
