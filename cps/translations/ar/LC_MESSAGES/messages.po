@@ -8362,6 +8362,10 @@ msgstr ""
 msgid "Remove {name}?"
 msgstr ""
 
+#: cps/spa_strings.py
+msgid "Removed devices"
+msgstr ""
+
 #: cps/spa_strings.py cps/templates/detail.html
 msgid "Removed from Currently Reading."
 msgstr ""
@@ -8478,6 +8482,11 @@ msgstr ""
 
 #: cps/spa_strings.py
 msgid "Restore"
+msgstr ""
+
+#: cps/spa_strings.py
+#, python-brace-format
+msgid "Restore {name}"
 msgstr ""
 
 #: cps/spa_strings.py

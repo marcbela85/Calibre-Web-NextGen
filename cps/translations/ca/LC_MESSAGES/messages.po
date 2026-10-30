@@ -8878,6 +8878,10 @@ msgstr "Elimina aquests"
 msgid "Remove {name}?"
 msgstr "Voleu treure {name}?"
 
+#: cps/spa_strings.py
+msgid "Removed devices"
+msgstr ""
+
 #: cps/spa_strings.py cps/templates/detail.html
 msgid "Removed from Currently Reading."
 msgstr "S'ha tret d'«En curs de lectura»."
@@ -8999,6 +9003,11 @@ msgstr "Restableix els valors predeterminats"
 #: cps/spa_strings.py
 msgid "Restore"
 msgstr "Restaura"
+
+#: cps/spa_strings.py
+#, python-brace-format
+msgid "Restore {name}"
+msgstr ""
 
 #: cps/spa_strings.py
 #, python-brace-format

@@ -8996,6 +8996,10 @@ msgstr "Retirer ceux-ci"
 msgid "Remove {name}?"
 msgstr "Supprimer {name} ?"
 
+#: cps/spa_strings.py
+msgid "Removed devices"
+msgstr "Appareils supprimés"
+
 #: cps/spa_strings.py cps/templates/detail.html
 msgid "Removed from Currently Reading."
 msgstr "Retiré de « Lecture en cours »."
@@ -9117,6 +9121,11 @@ msgstr "Réinitialiser les valeurs par défaut"
 #: cps/spa_strings.py
 msgid "Restore"
 msgstr "Restaurer"
+
+#: cps/spa_strings.py
+#, python-brace-format
+msgid "Restore {name}"
+msgstr "Restaurer {name}"
 
 #: cps/spa_strings.py
 #, python-brace-format
