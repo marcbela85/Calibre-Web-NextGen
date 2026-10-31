@@ -374,8 +374,8 @@ export function Reader({ id }: { id: string }) {
   // data.json on mount so a tapped highlight can show its note without a
   // round-trip, and kept in step with every create/edit/remove.
   const notesRef = useRef<Map<string, string>>(new Map());
-  // True while a composer create is waiting on the server (#2550).
-  const createInFlightRef = useRef(false);
+  // True while a composer save is waiting on the server (#2550, #2778).
+  const composerSaveInFlightRef = useRef(false);
   const [composerSaving, setComposerSaving] = useState(false);
   /* public_id -> label, from the same response as the rows. An OLDER backend
    * omits the envelope entirely, which is how a client can tell; an empty map
@@ -984,46 +984,36 @@ export function Reader({ id }: { id: string }) {
 
   // Single write of record for the composer, so Save and Remove note cannot
   // drift apart. Create mode POSTs highlight+note together; edit mode PATCHes
-  // note_text (an empty string clears it). Silent on failure, as everywhere
-  // else in this reader — the server stays the source of truth.
+  // note_text (an empty string clears it), or DELETEs an unanchored row whose
+  // note is removed; standalone POSTs an unanchored note.
+  //
+  // The composer stays open until the server has the change, so a failed save
+  // keeps the typed note (and, for a create, the selection) for a retry that
+  // sends the same request (#2550 create, #2778 edit, removal, standalone).
+  // While a save is in flight a second press is ignored: a repeated create
+  // would store the same note twice.
   const commitNote = useCallback(async (
     c: NonNullable<typeof composer>, rawNote: string,
   ) => {
     const note = rawNote.trim();
-    if (c.mode === 'create') {
-      // The composer stays open until the server has the highlight, so a failed
-      // save keeps the selection and the typed note for a retry (#2550). While a
-      // save is in flight a second press is ignored: it would store the same
-      // highlight twice.
-      if (createInFlightRef.current) return;
-      createInFlightRef.current = true;
-      setComposerSaving(true);
-      let saved = false;
-      try {
-        saved = await persistHighlight(c.cfiRange, c.text, c.color, note);
-      } finally {
-        createInFlightRef.current = false;
-        setComposerSaving(false);
-      }
-      if (!saved) {
-        announce(t('Could not save that note.'), { assertive: true });
-        return;
-      }
-      // Close only the composer that made this save: the reader may have
-      // cancelled it and opened another while the request was in flight.
-      const open = composerRef.current;
-      if (!open || open.mode !== 'create' || open.cfiRange !== c.cfiRange) return;
+    // An empty standalone note is nothing at all: the backend rejects it, and
+    // silently discarding is kinder than an error for a field the reader
+    // simply left blank. An edit with no row id has nothing to write to.
+    if ((c.mode === 'standalone' && !note) || (c.mode === 'edit' && !c.annotationId)) {
       setComposer(null);
-      announce(note ? t('Note saved') : t('Highlight saved'));
       return;
     }
-    setComposer(null);
-    if (c.mode === 'standalone') {
-      // An empty standalone note is nothing at all — the backend rejects it, and
-      // silently discarding is kinder than an error for a field the reader
-      // simply left blank.
-      if (!note) return;
-      try {
+    if (composerSaveInFlightRef.current) return;
+    composerSaveInFlightRef.current = true;
+    setComposerSaving(true);
+    // What to announce once the server has the change; null when it refused.
+    let saved: string | null = null;
+    try {
+      if (c.mode === 'create') {
+        if (await persistHighlight(c.cfiRange, c.text, c.color, note)) {
+          saved = note ? t('Note saved') : t('Highlight saved');
+        }
+      } else if (c.mode === 'standalone') {
         const created = await apiPost<Partial<AnnRow>>(`/annotations/${id}`, {
           position_type: 'unanchored', note_text: note,
         });
@@ -1036,28 +1026,40 @@ export function Reader({ id }: { id: string }) {
           source: created?.source ?? 'webreader',
           position_type: created?.position_type ?? 'unanchored',
         }]);
-        announce(t('Note saved'));
-      } catch { announce(t('Could not save that note.'), { assertive: true }); }
+        saved = t('Note saved');
+      } else if (c.unanchored && !note) {
+        // An unanchored row has no passage to retain after its note is removed.
+        const annotationId = c.annotationId!;
+        await apiDelete(`/annotations/${id}/${annotationId}`);
+        notesRef.current.delete(annotationId);
+        setAnnList((rows) => rows.filter((row) => row.annotation_id !== annotationId));
+        saved = t('Note removed');
+      } else {
+        const annotationId = c.annotationId!;
+        await apiPatch(`/annotations/${id}/${annotationId}`, { note_text: note });
+        if (note) notesRef.current.set(annotationId, note);
+        else notesRef.current.delete(annotationId);
+        setAnnList((rows) => rows.map((r) =>
+          r.annotation_id === annotationId ? { ...r, note_text: note || null } : r));
+        repaintHighlight(c.cfiRange, c.color, annotationId, !!note);
+        saved = note ? t('Note saved') : t('Note removed');
+      }
+    } catch {
+      saved = null;
+    } finally {
+      composerSaveInFlightRef.current = false;
+      setComposerSaving(false);
+    }
+    if (saved === null) {
+      announce(t('Could not save that note.'), { assertive: true });
       return;
     }
-    if (!c.annotationId) return;
-    try {
-      if (c.unanchored && !note) {
-        // An unanchored row has no passage to retain after its note is removed.
-        await apiDelete(`/annotations/${id}/${c.annotationId}`);
-        notesRef.current.delete(c.annotationId);
-        setAnnList((rows) => rows.filter((row) => row.annotation_id !== c.annotationId));
-        announce(t('Note removed'));
-        return;
-      }
-      await apiPatch(`/annotations/${id}/${c.annotationId}`, { note_text: note });
-      if (note) notesRef.current.set(c.annotationId, note);
-      else notesRef.current.delete(c.annotationId);
-      setAnnList((rows) => rows.map((r) =>
-        r.annotation_id === c.annotationId ? { ...r, note_text: note || null } : r));
-      repaintHighlight(c.cfiRange, c.color, c.annotationId, !!note);
-      announce(note ? t('Note saved') : t('Note removed'));
-    } catch { /* silent: server keeps the previous note */ }
+    // Close only the composer that made this save: the reader may have
+    // cancelled it and opened another while the request was in flight. Typing
+    // and colour changes are locked while saving, so it is still this object.
+    if (composerRef.current !== c) return;
+    setComposer(null);
+    announce(saved);
   }, [id, persistHighlight, repaintHighlight, announce, t]);
 
   /*
@@ -1163,25 +1165,35 @@ export function Reader({ id }: { id: string }) {
     if (composer) void commitNote(composer, '');
   }, [composer, commitNote]);
 
-  // Remove the tapped highlight server-side, then un-paint it (#782). Fails
-  // silently (the reader has no toast) and leaves the highlight painted on
-  // error — the row is still on the server, so keeping it painted stays honest.
+  // Remove or recolour the tapped highlight (#782). The popover closes while
+  // the request is out; a refusal reopens it on the same highlight and tells
+  // the reader, so another tap retries the same request (#2779). The paint is
+  // only changed once the server has the change, so it keeps matching the
+  // server either way. A reader who has since opened another highlight keeps
+  // that one: the failure is announced, but their popover is not replaced.
+  const reopenRefusedHighlight = useCallback((hl: NonNullable<typeof activeHl>) => {
+    setActiveHl((cur) => cur ?? hl);
+    announce(t('Could not save that highlight.'), { assertive: true });
+  }, [announce, t]);
+
   const removeHighlight = useCallback(async () => {
     const hl = activeHl;
     if (!hl) return;
     setActiveHl(null);
     try {
       await apiDelete(`/annotations/${id}/${hl.id}`);
-      notesRef.current.delete(hl.id);
-      setAnnList((rows) => rows.filter((r) => r.annotation_id !== hl.id));
-      try { renditionRef.current?.annotations?.remove(hl.cfiRange, 'highlight'); } catch { /* noop */ }
-    } catch { /* silent: keep the highlight painted */ }
-  }, [activeHl, id]);
+    } catch {
+      reopenRefusedHighlight(hl);
+      return;
+    }
+    notesRef.current.delete(hl.id);
+    setAnnList((rows) => rows.filter((r) => r.annotation_id !== hl.id));
+    try { renditionRef.current?.annotations?.remove(hl.cfiRange, 'highlight'); } catch { /* noop */ }
+  }, [activeHl, id, reopenRefusedHighlight]);
 
-  // Recolor the tapped highlight (PATCH supports highlight_color). epub.js keys
-  // an annotation by (cfiRange + type), so a new color is applied by removing
-  // the old paint and re-adding with the new fill. Silent on error (old paint
-  // is untouched, server keeps the prior color).
+  // PATCH supports highlight_color. epub.js keys an annotation by (cfiRange +
+  // type), so a new colour is applied by removing the old paint and re-adding
+  // it with the new fill.
   const recolorHighlight = useCallback(async (color: string) => {
     const hl = activeHl;
     if (!hl) return;
@@ -1189,12 +1201,15 @@ export function Reader({ id }: { id: string }) {
     if (hl.color === color) return;
     try {
       await apiPatch(`/annotations/${id}/${hl.id}`, { highlight_color: color });
-      setAnnList((rows) => rows.map((r) =>
-        r.annotation_id === hl.id ? { ...r, highlight_color: color } : r));
-      // Recolouring must not silently drop the note marker.
-      repaintHighlight(hl.cfiRange, color, hl.id, !!notesRef.current.get(hl.id));
-    } catch { /* silent: keep the highlight in its original color */ }
-  }, [activeHl, id, repaintHighlight]);
+    } catch {
+      reopenRefusedHighlight(hl);
+      return;
+    }
+    setAnnList((rows) => rows.map((r) =>
+      r.annotation_id === hl.id ? { ...r, highlight_color: color } : r));
+    // Recolouring must not silently drop the note marker.
+    repaintHighlight(hl.cfiRange, color, hl.id, !!notesRef.current.get(hl.id));
+  }, [activeHl, id, repaintHighlight, reopenRefusedHighlight]);
 
   useEffect(() => {
     savedCfiRef.current = savedBookmark?.bookmark ?? savedCfiRef.current;

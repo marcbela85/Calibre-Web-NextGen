@@ -988,6 +988,257 @@ test.describe('reader: writing a standalone note (#325)', () => {
 });
 
 /*
+ * A refused note write keeps the composer open for a retry (#2778).
+ *
+ * #2550 made a failed CREATE retryable. Editing a note (PATCH), removing an
+ * unanchored note (DELETE) and writing a note with no passage (POST) still
+ * closed the composer before the request and swallowed the failure, so the
+ * reader saw nothing wrong and the old note came back on the next open. Each
+ * test refuses the first request, checks the composer kept the typed text and
+ * the error was announced, then lets the retry reach the real server and
+ * checks it sent the same request and the server holds the change.
+ */
+test.describe('reader: a failed note edit, removal or standalone save can be retried (#2778)', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  // Desktop and mobile run these at the same time against the same book, so
+  // every note carries its test's tag and only tagged notes are read or removed.
+  const unanchoredNotes = (page: Page, bookId: number, tag: string) => page.evaluate(async ([id, mark]) => {
+    const j = await (await fetch(`/annotations/${id}/data.json`, { credentials: 'include' })).json();
+    return (j.annotations || [])
+      .filter((a: { position_type: string; note_text: string | null }) =>
+        a.position_type === 'unanchored' && (a.note_text ?? '').includes(mark))
+      .map((a: { note_text: string }) => a.note_text);
+  }, [String(bookId), tag] as const);
+
+  const removeUnanchored = (page: Page, bookId: number, tag: string) => page.evaluate(async ([id, mark]) => {
+    const csrf = (await (await fetch('/api/v1/auth/csrf', { credentials: 'include' })).json()).csrf_token;
+    const j = await (await fetch(`/annotations/${id}/data.json`, { credentials: 'include' })).json();
+    for (const a of (j.annotations || [])) {
+      if (a.position_type !== 'unanchored' || !(a.note_text ?? '').includes(mark)) continue;
+      await fetch(`/annotations/${id}/${a.annotation_id}`, {
+        method: 'DELETE', credentials: 'include', headers: { 'X-CSRFToken': csrf },
+      });
+    }
+  }, [String(bookId), tag] as const);
+
+  // Opening a book clears its annotations, and the other tests in this file
+  // start on slots 0 to 3, so these start on slots of their own.
+  const slot = (project: string) => (project === 'mobile' ? 5 : 4);
+
+  // Open the reader on a book holding the given unanchored note, and open that
+  // note's composer from the drawer.
+  async function editSeededNote(page: Page, project: string, note: string): Promise<number> {
+    const bookId = await openReaderOnEpub(page, slot(project));
+    expect(bookId, 'an EPUB that renders in the reader').not.toBeNull();
+    const status = await page.evaluate(async ([id, text]) => {
+      const csrf = (await (await fetch('/api/v1/auth/csrf', { credentials: 'include' })).json()).csrf_token;
+      return (await fetch(`/annotations/${id}`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrf },
+        body: JSON.stringify({ position_type: 'unanchored', note_text: text }),
+      })).status;
+    }, [String(bookId), note] as const);
+    expect(status, 'the seeded note is stored').toBe(201);
+    await page.reload();
+    await waitForReaderRender(page);
+    await page.getByRole('button', { name: 'Highlights and notes' }).click();
+    await drawer(page).locator('li', { hasText: note }).getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit note' })).toBeVisible();
+    await expect(page.locator('textarea')).toHaveValue(note);
+    return bookId!;
+  }
+
+  test('a refused note edit keeps the edited text and retries the same change', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const TAG = `${testInfo.project.name}-${Date.now()}`;
+    const ORIGINAL = `Before the edit. ${TAG}`;
+    const bookId = await editSeededNote(page, testInfo.project.name, ORIGINAL);
+    const EDITED = `After the edit. ${TAG}`;
+    await setNote(page, EDITED);
+
+    const sent: { url: string; body: unknown }[] = [];
+    await page.route(`**/annotations/${bookId}/*`, async (route) => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      sent.push({ url: route.request().url(), body: route.request().postDataJSON() });
+      if (sent.length === 1) return route.fulfill({ status: 500, body: 'temporary failure' });
+      return route.continue();
+    });
+
+    await page.getByRole('button', { name: 'Save note' }).click();
+    await expect(page.getByRole('alert')).toContainText('Could not save that note.');
+    await expect(page.getByRole('dialog', { name: 'Edit note' })).toBeVisible();
+    await expect(page.locator('textarea')).toHaveValue(EDITED);
+    expect((await unanchoredNotes(page, bookId, TAG))).toEqual([ORIGINAL]);
+
+    await page.getByRole('button', { name: 'Save note' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit note' })).toBeHidden();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    await expect.poll(async () => (await unanchoredNotes(page, bookId, TAG))).toEqual([EDITED]);
+
+    await removeUnanchored(page, bookId, TAG);
+  });
+
+  test('a refused note removal keeps the note and retries the same removal', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const TAG = `${testInfo.project.name}-${Date.now()}`;
+    const NOTE = `Remove me. ${TAG}`;
+    const bookId = await editSeededNote(page, testInfo.project.name, NOTE);
+
+    const sent: string[] = [];
+    await page.route(`**/annotations/${bookId}/*`, async (route) => {
+      if (route.request().method() !== 'DELETE') return route.continue();
+      sent.push(route.request().url());
+      if (sent.length === 1) return route.fulfill({ status: 500, body: 'temporary failure' });
+      return route.continue();
+    });
+
+    await page.getByRole('button', { name: 'Remove note' }).click();
+    await expect(page.getByRole('alert')).toContainText('Could not save that note.');
+    await expect(page.getByRole('dialog', { name: 'Edit note' })).toBeVisible();
+    await expect(page.locator('textarea')).toHaveValue(NOTE);
+    expect((await unanchoredNotes(page, bookId, TAG))).toEqual([NOTE]);
+
+    await page.getByRole('button', { name: 'Remove note' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit note' })).toBeHidden();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe(sent[0]);
+    await expect.poll(async () => (await unanchoredNotes(page, bookId, TAG)).length).toBe(0);
+  });
+
+  test('a refused standalone note keeps the text and retries the same note', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const bookId = await openReaderOnEpub(page, slot(testInfo.project.name));
+    expect(bookId, 'an EPUB that renders in the reader').not.toBeNull();
+    const TAG = `${testInfo.project.name}-${Date.now()}`;
+    const NOTE = `A note about the whole book. ${TAG}`;
+
+    const sent: unknown[] = [];
+    await page.route(`**/annotations/${bookId}`, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      sent.push(route.request().postDataJSON());
+      if (sent.length === 1) return route.fulfill({ status: 500, body: 'temporary failure' });
+      return route.continue();
+    });
+
+    await page.getByRole('button', { name: 'Highlights and notes' }).click();
+    await page.getByRole('button', { name: 'Write a note' }).click();
+    await setNote(page, NOTE);
+    await page.getByRole('button', { name: 'Save note' }).click();
+    await expect(page.getByRole('alert')).toContainText('Could not save that note.');
+    await expect(page.getByRole('dialog', { name: 'Write a note' })).toBeVisible();
+    await expect(page.locator('textarea')).toHaveValue(NOTE);
+
+    await page.getByRole('button', { name: 'Save note' }).click();
+    await expect(page.getByRole('dialog', { name: 'Write a note' })).toBeHidden();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    await expect.poll(async () => (await unanchoredNotes(page, bookId!, TAG))).toEqual([NOTE]);
+
+    await removeUnanchored(page, bookId!, TAG);
+  });
+});
+
+/*
+ * A refused highlight removal or recolour can be retried (#2779).
+ *
+ * The edit popover closed before its DELETE or PATCH and swallowed a refusal,
+ * so the reader tapped Remove or a colour, saw the popover go, and could not
+ * tell the highlight was still there or still the old colour. Each test
+ * refuses the first request, checks the reader said so, the popover came back
+ * and the paint still matches the server, then lets the retry reach the real
+ * server and checks it sent the same request and the server holds the change.
+ */
+test.describe('reader: a failed highlight removal or recolour can be retried (#2779)', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  // Opening a book clears its annotations, and the drawer tests use slots 2
+  // and 3, so these share the #2778 slots (that describe runs before this one).
+  const slot = (project: string) => (project === 'mobile' ? 5 : 4);
+
+  type ServerRow = { id: string; color: string | null };
+  const serverRows = (page: Page, bookId: number): Promise<ServerRow[]> => page.evaluate(async (id) => {
+    const j = await (await fetch(`/annotations/${id}/data.json`, { credentials: 'include' })).json();
+    return (j.annotations || []).map((a: { annotation_id: string; highlight_color: string | null }) =>
+      ({ id: a.annotation_id, color: a.highlight_color }));
+  }, bookId);
+
+  const paintedFill = (page: Page) => page.evaluate(
+    () => document.querySelector('.cwng-hl')?.getAttribute('fill') ?? null);
+
+  // Open the reader, make one yellow highlight, and open its edit popover.
+  async function yellowHighlightOpen(page: Page, project: string): Promise<number> {
+    const bookId = await openReaderOnEpub(page, slot(project));
+    expect(bookId, 'an EPUB that renders in the reader').not.toBeNull();
+    expect(await pageUntilText(page), 'a page with selectable text').toBe(true);
+    expect(await selectSomeText(page), 'text selected in the book frame').not.toBe('');
+    await page.getByRole('button', { name: 'Yellow' }).click();
+    await expect.poll(async () => (await serverRows(page, bookId!)).length).toBe(1);
+    await expect.poll(async () => (await paintCounts(page)).plain).toBe(1);
+    await tapHighlight(page, '.cwng-hl');
+    await expect(page.getByRole('button', { name: 'Remove highlight' })).toBeVisible();
+    return bookId!;
+  }
+
+  test('a refused removal keeps the highlight and retries the same removal', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const bookId = await yellowHighlightOpen(page, testInfo.project.name);
+
+    const sent: string[] = [];
+    await page.route(`**/annotations/${bookId}/*`, async (route) => {
+      if (route.request().method() !== 'DELETE') return route.continue();
+      sent.push(route.request().url());
+      if (sent.length === 1) return route.fulfill({ status: 500, body: 'temporary failure' });
+      return route.continue();
+    });
+
+    await page.getByRole('button', { name: 'Remove highlight' }).click();
+    await expect(page.getByRole('alert')).toContainText('Could not save that highlight.');
+    await expect(page.getByRole('button', { name: 'Remove highlight' })).toBeVisible();
+    expect((await paintCounts(page)).plain, 'the refused highlight stays painted').toBe(1);
+    expect(await serverRows(page, bookId)).toHaveLength(1);
+
+    await page.getByRole('button', { name: 'Remove highlight' }).click();
+    await expect(page.getByRole('button', { name: 'Remove highlight' })).toBeHidden();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe(sent[0]);
+    await expect.poll(async () => (await serverRows(page, bookId)).length).toBe(0);
+    await expect.poll(async () => (await paintCounts(page)).plain).toBe(0);
+  });
+
+  test('a refused recolour keeps the old colour and retries the same change', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    const bookId = await yellowHighlightOpen(page, testInfo.project.name);
+    const yellowFill = await paintedFill(page);
+
+    const sent: unknown[] = [];
+    await page.route(`**/annotations/${bookId}/*`, async (route) => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      sent.push(route.request().postDataJSON());
+      if (sent.length === 1) return route.fulfill({ status: 500, body: 'temporary failure' });
+      return route.continue();
+    });
+
+    await page.getByRole('button', { name: 'Green' }).click();
+    await expect(page.getByRole('alert')).toContainText('Could not save that highlight.');
+    await expect(page.getByRole('button', { name: 'Remove highlight' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Yellow' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await paintedFill(page), 'the paint keeps the colour the server holds').toBe(yellowFill);
+    expect((await serverRows(page, bookId)).map((r) => r.color)).toEqual(['yellow']);
+
+    await page.getByRole('button', { name: 'Green' }).click();
+    await expect(page.getByRole('button', { name: 'Remove highlight' })).toBeHidden();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    await expect.poll(async () => (await serverRows(page, bookId)).map((r) => r.color)).toEqual(['green']);
+    await expect.poll(() => paintedFill(page)).not.toBe(yellowFill);
+
+    await clearAnnotationsViaApi(page, bookId);
+  });
+});
+
+/*
  * Device labels in the highlights drawer (#325).
  *
  * The affordance was built when the drawer landed and deliberately left unwired:
